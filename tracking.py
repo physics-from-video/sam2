@@ -3,16 +3,18 @@ import json
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
-from utils.plotting import show_mask, show_points, save_plot
+from utils.plotting import show_points, save_plot, overlay_mask_on_image
 
 # Import SAM2 predictor builder (adjust the import path as needed)
 from sam2.build_sam import build_sam2_video_predictor
 
 # ----- CONFIGURATION -----
 # Directory where the uniform processed videos are stored (from your previous processing).
-RESIZED_VIDEOS_DIR = r"/scratch-shared/tnijdam/resized_generated_videos"
+# INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/resized_generated_videos" # for generated videos
+INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/real-world-jpg" # for real-world videos
+
 # Directory where the tracking results should be stored.
-OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres"
+OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres/real_world"
 # Path to the JSON file with labels.
 LABELS_JSON_PATH = r"/home/tnijdam/VGMs/prompts/reference_images/labels.json"
 
@@ -41,8 +43,8 @@ def process_video_folder(video_folder):
       - Plots of segmentation every 5 frames.
     The outputs are saved inside OUTPUT_DIR with the same relative path as video_folder.
     """
-    # Compute relative path from RESIZED_VIDEOS_DIR
-    rel_path = os.path.relpath(video_folder, RESIZED_VIDEOS_DIR)
+    # Compute relative path from INPUT_VIDEOS_DIR
+    rel_path = os.path.relpath(video_folder, INPUT_VIDEOS_DIR)
     # Compute new output path inside OUTPUT_DIR
     tracking_output_folder = os.path.join(OUTPUT_DIR, rel_path)
     frames_dir = os.path.join(video_folder, "frames_for_tracking")
@@ -113,6 +115,9 @@ def process_video_folder(video_folder):
         # Plot only the points and labels for this object.
         show_points(data["points"], data["labels"], ax)
         save_plot(fig, os.path.join(tracking_plots_dir, f"first_frame_labels_object_{obj_id}.jpg"))
+        
+
+    
     # --- Initialize SAM2 tracking ---
     inference_state = predictor.init_state(video_path=frames_dir)
     predictor.reset_state(inference_state)
@@ -120,8 +125,6 @@ def process_video_folder(video_folder):
     masks_to_show = {}
     
     for obj_id, data in object_points.items():
-        print("HEEEEEEEEEEEREEEE1111")
-        print(obj_id, data)
         # Add the points for this object; SAM2 should now track them separately.
         frame_idx, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
             inference_state=inference_state,
@@ -138,16 +141,24 @@ def process_video_folder(video_folder):
     # For simplicity, we use the mask of the first object.
 
     # Loop through all stored masks and overlay them using show_mask.
+    # for obj_id, mask in masks_to_show.items():
+    #     print("HEEEEEEEEEEEREEEE222")
+    #     print(obj_id, mask)
+    #     fig, ax = plt.subplots(figsize=(9, 6))
+    #     ax.set_title("First Frame Segmentation (All Objects)")
+    #     ax.imshow(first_frame)
+    #     show_mask(mask, ax, obj_id=obj_id)
+    #     save_plot(fig, os.path.join(tracking_plots_dir, f"first_frame_segmentation_{obj_id}.jpg"))
     for obj_id, mask in masks_to_show.items():
-        print("HEEEEEEEEEEEREEEE222")
-        print(obj_id, mask)
-        fig, ax = plt.subplots(figsize=(9, 6))
-        ax.set_title("First Frame Segmentation (All Objects)")
-        ax.imshow(first_frame)
-        show_mask(mask, ax, obj_id=obj_id)
-        save_plot(fig, os.path.join(tracking_plots_dir, f"first_frame_segmentation_{obj_id}.jpg"))
+        print("Saving first frame segmentation overlay...")
+        
+        overlay_img = overlay_mask_on_image(first_frame, mask, obj_id=obj_id)
+        save_path = os.path.join(tracking_plots_dir, f"first_frame_segmentation_{obj_id}.jpg")
+        
+        Image.fromarray(overlay_img).save(save_path)
     
-    # --- Propagate segmentation over the video ---
+
+    # --- Plot segmentation on every frame ---
     video_segments = {}
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
         for i, out_obj_id in enumerate(out_obj_ids):
@@ -155,32 +166,51 @@ def process_video_folder(video_folder):
                 video_segments[out_frame_idx] = {}
             video_segments[out_frame_idx][out_obj_id] = (out_mask_logits[i] > 0.0).cpu().numpy()
     
-    # --- Plot segmentation every 5 frames ---
     frame_names = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
-                         key=lambda p: int(os.path.splitext(p)[0]))
+                        key=lambda p: int(os.path.splitext(p)[0]))
+    
     for out_frame_idx in range(0, len(frame_names), 5):
         frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
         frame_img = np.array(Image.open(frame_path))
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.set_title(f"Frame {out_frame_idx} Segmentation")
-        ax.imshow(frame_img)
+
         if out_frame_idx in video_segments:
             for obj_id, mask in video_segments[out_frame_idx].items():
-                show_mask(mask, ax, obj_id=obj_id)
-        save_plot(fig, os.path.join(frames_plots, f"frame_{out_frame_idx:05d}_segmentation.jpg"))
+                frame_img = overlay_mask_on_image(frame_img, mask, obj_id=obj_id)
+        
+        save_path = os.path.join(frames_plots, f"frame_{out_frame_idx:05d}_segmentation.jpg")
+        Image.fromarray(frame_img).save(save_path)
+        
+    # --- Propagate segmentation over the video ---
+
+    # --- Plot segmentation every 5 frames ---
+    # frame_names = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
+    #                      key=lambda p: int(os.path.splitext(p)[0]))
+    # for out_frame_idx in range(0, len(frame_names), 5):
+    #     frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
+    #     frame_img = np.array(Image.open(frame_path))
+    #     fig, ax = plt.subplots(figsize=(6, 4))
+    #     ax.set_title(f"Frame {out_frame_idx} Segmentation")
+    #     ax.imshow(frame_img)
+        
+    #     if out_frame_idx in video_segments:
+    #         for obj_id, mask in video_segments[out_frame_idx].items():
+    #             show_mask(mask, ax, obj_id=obj_id)
+    #     save_plot(fig, os.path.join(frames_plots, f"frame_{out_frame_idx:05d}_segmentation.jpg"))
     
     print(f"Tracking plots saved in {frames_plots}")
 
 
 def process_all_videos_for_tracking():
     """
-    Loops through all video folders in RESIZED_VIDEOS_DIR (the uniform output from processing)
+    Loops through all video folders in INPUT_VIDEOS_DIR (the uniform output from processing)
     that contain a "frames_for_tracking" folder, and runs tracking on each.
     """
-    for root, dirs, files in os.walk(RESIZED_VIDEOS_DIR):
+    for root, dirs, files in os.walk(INPUT_VIDEOS_DIR):
         # We assume video folders are named like "video_XX"
         if os.path.basename(root).startswith("video_"):
+            # check if "frames_for_tracking" exists, other check if there are already jpgs files in this dir,because then we track this 
             frames_dir = os.path.join(root, "frames_for_tracking")
+            
             if os.path.exists(frames_dir):
                 print(f"Running tracking in {root}")
                 
