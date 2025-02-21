@@ -28,28 +28,6 @@ def overlay_mask_on_image(image, mask, obj_id=None, random_color=False):
 
     return blended
 
-
-
-# def overlay_mask_on_image(image, mask, obj_id=None, random_color=False):
-#     """Overlay segmentation mask on the original image without using matplotlib."""
-#     if random_color:
-#         color = np.random.randint(0, 255, (3,), dtype=np.uint8)
-#     else:
-#         cmap = plt.get_cmap("tab10")
-#         cmap_idx = 0 if obj_id is None else obj_id + 1
-#         color = (np.array(cmap(cmap_idx)[:3]) * 255).astype(np.uint8)
-
-#     # Convert mask to three-channel color
-#     mask_rgb = np.zeros_like(image, dtype=np.uint8)
-#     mask_rgb[mask > 0] = color  # Apply color to masked regions
-    
-#     # Blend original image and mask overlay
-#     alpha = 0.6  # Transparency factor
-#     blended = cv2.addWeighted(image, 1 - alpha, mask_rgb, alpha, 0)
-
-#     return blended
-
-
 def show_points(coords, labels, ax, marker_size=200):
     """Plot positive (green) and negative (red) points on an axis."""
     pos_points = coords[labels==1]

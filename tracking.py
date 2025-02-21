@@ -4,6 +4,8 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from utils.plotting import show_points, save_plot, overlay_mask_on_image
+from skimage.measure import label, regionprops
+import pickle
 
 # Import SAM2 predictor builder (adjust the import path as needed)
 from sam2.build_sam import build_sam2_video_predictor
@@ -33,6 +35,32 @@ def get_video_key(experiment):
 # Load the labels JSON.
 with open(LABELS_JSON_PATH, "r") as f:
     labels_json = json.load(f)
+
+def compute_mask_properties(mask, experiment):
+    """
+    Given a binary mask (2D numpy array), compute:
+      - centre: the centroid of the mask (as (y, x))
+      - max_distance: if experiment=="holonomic_pendulum", the maximum distance between any two mask pixels;
+                      otherwise, None.
+    """
+    mask = np.squeeze(mask)  # Ensures shape is (H, W)
+    mask_bool = mask > 0
+    indices = np.argwhere(mask_bool)
+    if indices.size == 0:
+        centre = (None, None)
+    else:
+        centre = tuple(np.mean(indices, axis=0))
+    
+    max_distance = None
+    if experiment == "holonomic_pendulum" and indices.size > 0:
+        # Use regionprops to get major_axis_length as a proxy for max distance
+        labeled = label(mask_bool)
+        props = regionprops(labeled)
+        if props:
+            max_distance = props[0].major_axis_length
+        else:
+            max_distance = 0.0
+    return centre, max_distance
 
 def process_video_folder(video_folder):
     """
@@ -114,7 +142,7 @@ def process_video_folder(video_folder):
         ax.imshow(first_frame)
         # Plot only the points and labels for this object.
         show_points(data["points"], data["labels"], ax)
-        save_plot(fig, os.path.join(tracking_plots_dir, f"first_frame_labels_object_{obj_id}.jpg"))
+        save_plot(fig, os.path.join(tracking_plots_dir, f"clicks_object_{obj_id}.jpg"))
         
 
     
@@ -136,24 +164,11 @@ def process_video_folder(video_folder):
         
         masks_to_show[obj_id] = (out_mask_logits[obj_id - 1] > 0.0).cpu().numpy()
 
-    # --- Plot segmentation on first frame ---
-    # Here we assume that out_mask_logits from the last call corresponds to each object.
-    # For simplicity, we use the mask of the first object.
-
-    # Loop through all stored masks and overlay them using show_mask.
-    # for obj_id, mask in masks_to_show.items():
-    #     print("HEEEEEEEEEEEREEEE222")
-    #     print(obj_id, mask)
-    #     fig, ax = plt.subplots(figsize=(9, 6))
-    #     ax.set_title("First Frame Segmentation (All Objects)")
-    #     ax.imshow(first_frame)
-    #     show_mask(mask, ax, obj_id=obj_id)
-    #     save_plot(fig, os.path.join(tracking_plots_dir, f"first_frame_segmentation_{obj_id}.jpg"))
     for obj_id, mask in masks_to_show.items():
         print("Saving first frame segmentation overlay...")
         
         overlay_img = overlay_mask_on_image(first_frame, mask, obj_id=obj_id)
-        save_path = os.path.join(tracking_plots_dir, f"first_frame_segmentation_{obj_id}.jpg")
+        save_path = os.path.join(tracking_plots_dir, f"segmentation_{obj_id}.jpg")
         
         Image.fromarray(overlay_img).save(save_path)
     
@@ -169,34 +184,127 @@ def process_video_folder(video_folder):
     frame_names = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
                         key=lambda p: int(os.path.splitext(p)[0]))
     
-    for out_frame_idx in range(0, len(frame_names), 5):
+    centers_over_time = {}   # {obj_id: [(frame_idx, (y, x)), ...]}
+    masks_over_time = {}     # {frame_idx: {obj_id: mask}}
+    max_distance_over_time = {}  # {obj_id: [(frame_idx, max_distance), ...]} (only if holonomic_pendulum)
+    
+    for out_frame_idx in range(0, len(frame_names)):
         frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
         frame_img = np.array(Image.open(frame_path))
 
         if out_frame_idx in video_segments:
+            masks_over_time[out_frame_idx] = {}
+
             for obj_id, mask in video_segments[out_frame_idx].items():
                 frame_img = overlay_mask_on_image(frame_img, mask, obj_id=obj_id)
-        
-        save_path = os.path.join(frames_plots, f"frame_{out_frame_idx:05d}_segmentation.jpg")
-        Image.fromarray(frame_img).save(save_path)
-        
-    # --- Propagate segmentation over the video ---
 
-    # --- Plot segmentation every 5 frames ---
-    # frame_names = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
-    #                      key=lambda p: int(os.path.splitext(p)[0]))
-    # for out_frame_idx in range(0, len(frame_names), 5):
-    #     frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
-    #     frame_img = np.array(Image.open(frame_path))
-    #     fig, ax = plt.subplots(figsize=(6, 4))
-    #     ax.set_title(f"Frame {out_frame_idx} Segmentation")
-    #     ax.imshow(frame_img)
+                # Compute the centre and max distance if applicable
+                centre, max_distance = compute_mask_properties(mask, experiment)
+                print(centre, max_distance)
+                # Store mask
+                masks_over_time[out_frame_idx][obj_id] = mask
+
+                # Store centre over time
+                if centre[0] is not None:
+                    if obj_id not in centers_over_time:
+                        centers_over_time[obj_id] = []
+                    centers_over_time[obj_id].append((out_frame_idx, centre))
+
+                # Store max distance only for "holonomic_pendulum"
+                if experiment == "holonomic_pendulum":
+                    if obj_id not in max_distance_over_time:
+                        max_distance_over_time[obj_id] = []
+                    max_distance_over_time[obj_id].append((out_frame_idx, max_distance))
+
+        # Save the segmentation overlay image
+        img_save_path = os.path.join(frames_plots, f"frame_{out_frame_idx:05d}_segmentation.jpg")
+        Image.fromarray(frame_img).save(img_save_path)
+
+    # --- Save all data at the end in a single pkl file per type ---
+    centres_pkl_path = os.path.join(tracking_output_folder, "centres.pkl")
+    masks_pkl_path = os.path.join(tracking_output_folder, "masks.pkl")
+
+    with open(centres_pkl_path, "wb") as pkl_file:
+        pickle.dump(centers_over_time, pkl_file)
+
+    with open(masks_pkl_path, "wb") as pkl_file:
+        pickle.dump(masks_over_time, pkl_file)
+
+    if experiment == "holonomic_pendulum":
+        max_distance_pkl_path = os.path.join(tracking_output_folder, "max_distance.pkl")
+        with open(max_distance_pkl_path, "wb") as pkl_file:
+            pickle.dump(max_distance_over_time, pkl_file)
+
+    print(f"Saved centres to {centres_pkl_path}")
+    print(f"Saved masks to {masks_pkl_path}")
+    if experiment == "holonomic_pendulum":
+        max_distance_pkl_path = os.path.join(tracking_output_folder, "max_distance.pkl")
+        with open(max_distance_pkl_path, "wb") as pkl_file:
+            pickle.dump(max_distance_over_time, pkl_file)
+        print(f"Saved max distances to {max_distance_pkl_path}")
+    print(f"Saved centres to {centres_pkl_path}")
+    print(f"Saved masks to {masks_pkl_path}")
         
-    #     if out_frame_idx in video_segments:
-    #         for obj_id, mask in video_segments[out_frame_idx].items():
-    #             show_mask(mask, ax, obj_id=obj_id)
-    #     save_plot(fig, os.path.join(frames_plots, f"frame_{out_frame_idx:05d}_segmentation.jpg"))
+    if centers_over_time:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        
+        for obj_id, points in centers_over_time.items():
+            # Sort points by frame index
+            points = sorted(points, key=lambda x: x[0])
+            frame_indices = [pt[0] for pt in points]  # List of frame indices
+            centres = np.array([pt[1] for pt in points], dtype=np.float32)  # Convert list of (y, x) tuples to array
+
+            if centres.ndim != 2 or centres.shape[1] != 2:
+                print(f"Warning: Invalid shape {centres.shape} for object {obj_id}, skipping.")
+                continue  # Skip invalid data
+            
+            y_positions = centres[:, 0]  # Extract Y positions correctly
+            x_positions = centres[:, 1]  # Extract X positions correctly
+
+            # Plot X and Y positions over time
+            ax1.plot(frame_indices, x_positions, marker='o', label=f"Object {obj_id} (X)")
+            ax2.plot(frame_indices, y_positions, marker='o', label=f"Object {obj_id} (Y)")
+        
+        ax1.set_xlabel("Frame Index")
+        ax1.set_ylabel("Centre X Position")
+        ax1.legend()
+        
+        ax2.set_xlabel("Frame Index")
+        ax2.set_ylabel("Centre Y Position")
+        ax2.legend()
+        
+        plt.suptitle("Object Centres Over Time")
+        
+        centre_plot_path = os.path.join(tracking_output_folder, "centres_over_time.jpg")
+        plt.savefig(centre_plot_path, bbox_inches="tight")
+        plt.close(fig)
+        
+        print(f"Centre trajectory plot saved to {centre_plot_path}")
     
+    if experiment == "holonomic_pendulum" and max_distance_over_time:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        for obj_id, distances in max_distance_over_time.items():
+            # Sort distances by frame index
+            distances = sorted(distances, key=lambda x: x[0])
+            frame_indices = [d[0] for d in distances]  # Frame indices
+            max_distances = np.array([d[1] for d in distances], dtype=np.float32)  # Extract max distances
+
+            ax.plot(frame_indices, max_distances, marker='o', label=f"Object {obj_id}")
+
+        ax.set_xlabel("Frame Index")
+        ax.set_ylabel("Max Distance")
+        ax.legend()
+        
+        plt.suptitle("Max Distance Over Time (Holonomic Pendulum)")
+        
+        max_distance_plot_path = os.path.join(tracking_output_folder, "max_distance_over_time.jpg")
+        plt.savefig(max_distance_plot_path, bbox_inches="tight")
+        plt.close(fig)
+        
+        print(f"Max distance trajectory plot saved to {max_distance_plot_path}")
+
+
     print(f"Tracking plots saved in {frames_plots}")
 
 
@@ -205,19 +313,41 @@ def process_all_videos_for_tracking():
     Loops through all video folders in INPUT_VIDEOS_DIR (the uniform output from processing)
     that contain a "frames_for_tracking" folder, and runs tracking on each.
     """
-    for root, dirs, files in os.walk(INPUT_VIDEOS_DIR):
-        # We assume video folders are named like "video_XX"
-        if os.path.basename(root).startswith("video_"):
-            # check if "frames_for_tracking" exists, other check if there are already jpgs files in this dir,because then we track this 
-            frames_dir = os.path.join(root, "frames_for_tracking")
+    # for root, dirs, files in os.walk(INPUT_VIDEOS_DIR):
+    #     # We assume video folders are named like "video_XX"
+    #     if os.path.basename(root).startswith("video_"):
+    #         # check if "frames_for_tracking" exists, other check if there are already jpgs files in this dir,because then we track this 
+    #         frames_dir = os.path.join(root, "frames_for_tracking")
             
-            if os.path.exists(frames_dir):
-                print(f"Running tracking in {root}")
+    #         if os.path.exists(frames_dir):
+    #             print(f"Running tracking in {root}")
                 
-                if "video_1" in root or "non_holonomic_pendulum" in root or "projectile" in root or "falling_ball" in root:
-                    print("----------------> SKIPPING")
-                    continue
-                process_video_folder(root)
+    #             # if "video_1" in root or "non_holonomic_pendulum" in root or "projectile" in root or "falling_ball" in root:
+    #             #     print("----------------> SKIPPING")
+    #             #     continue
+    #             process_video_folder(root)
+
+    
+    # upload to HF
+    OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres/real_world"
+    repo_name = "physics-from-video/sam2-real-world-tracking"
+    
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    print(f"Uploading {OUTPUT_DIR} to Hugging Face dataset repository {repo_name}...")
+
+    # # Ensure the repository exists (create if necessary)
+    api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
+
+    # # Delete old files from the repo before re-uploading to ensure overwrite
+    api.delete_repo(repo_id=repo_name, repo_type="dataset")
+    api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
+
+    # # Upload files (using upload_large_folder for large datasets)
+    api.upload_large_folder(folder_path=OUTPUT_DIR, repo_id=repo_name, repo_type="dataset")
+
+    print(f"Upload complete: {repo_name}")
 
 if __name__ == "__main__":
     process_all_videos_for_tracking()
