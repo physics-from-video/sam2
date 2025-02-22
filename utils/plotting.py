@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import os
+
 
 def overlay_mask_on_image(image, mask, obj_id=None, random_color=False):
     """Overlay segmentation mask on the original image without using matplotlib."""
@@ -44,4 +46,64 @@ def show_points(coords, labels, ax, marker_size=200):
 def save_plot(fig, save_path):
     """Save a matplotlib figure and close it."""
     fig.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
+
+def plot_first_frame(first_frame, object_points, output_dir):
+    """Plot and save the first frame with overlaid label points for each object."""
+    for obj_id, data in object_points.items():
+        fig, ax = plt.subplots(figsize=(9, 6))
+        ax.set_title(f"First Frame Labels for Object {obj_id}")
+        ax.imshow(first_frame)
+        show_points(data["points"], data["labels"], ax)
+        save_plot(fig, os.path.join(output_dir, f"clicks_object_{obj_id}.jpg"))
+        plt.close(fig)
+
+
+def save_first_frame_segmentation(first_frame, masks_to_show, tracking_plots_dir):
+    """Overlay segmentation masks on the first frame and save the images."""
+    for obj_id, mask in masks_to_show.items():
+        overlay_img = overlay_mask_on_image(first_frame, mask, obj_id=obj_id)
+        Image.fromarray(overlay_img).save(os.path.join(tracking_plots_dir, f"segmentation_{obj_id}.jpg"))
+        
+        
+def plot_centres_over_time(centers_over_time, output_folder):
+    """Plot the object centres over time (X and Y separately) and save the figure."""
+    if not centers_over_time:
+        return
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    for obj_id, points in centers_over_time.items():
+        points = sorted(points, key=lambda x: x[0])
+        frame_indices = [pt[0] for pt in points]
+        centres = np.array([pt[1] for pt in points], dtype=np.float32)
+        if centres.ndim == 2 and centres.shape[1] == 2:
+            ax1.plot(frame_indices, centres[:, 1], marker='o', label=f"Object {obj_id} (X)")
+            ax2.plot(frame_indices, centres[:, 0], marker='o', label=f"Object {obj_id} (Y)")
+    ax1.set_xlabel("Frame Index")
+    ax1.set_ylabel("Centre X Position")
+    ax1.legend()
+    ax2.set_xlabel("Frame Index")
+    ax2.set_ylabel("Centre Y Position")
+    ax2.legend()
+    plt.suptitle("Object Centres Over Time")
+    centre_plot_path = os.path.join(output_folder, "centres_over_time.jpg")
+    plt.savefig(centre_plot_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_max_distance_over_time(max_distance_over_time, output_folder):
+    """Plot max distances over time (for holonomic pendulum) and save the figure."""
+    if not max_distance_over_time:
+        return
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for obj_id, distances in max_distance_over_time.items():
+        distances = sorted(distances, key=lambda x: x[0])
+        frame_indices = [d[0] for d in distances]
+        max_distances = np.array([d[1] for d in distances], dtype=np.float32)
+        ax.plot(frame_indices, max_distances, marker='o', label=f"Object {obj_id}")
+    ax.set_xlabel("Frame Index")
+    ax.set_ylabel("Max Distance")
+    ax.legend()
+    plt.suptitle("Max Distance Over Time (Holonomic Pendulum)")
+    max_distance_plot_path = os.path.join(output_folder, "max_distance_over_time.jpg")
+    plt.savefig(max_distance_plot_path, bbox_inches="tight")
     plt.close(fig)
