@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from utils.plotting import show_points, save_plot, overlay_mask_on_image
 from skimage.measure import label, regionprops
 import pickle
+import re
 
 # Import SAM2 predictor builder (adjust the import path as needed)
 from sam2.build_sam import build_sam2_video_predictor
@@ -13,7 +14,7 @@ from sam2.build_sam import build_sam2_video_predictor
 # ----- CONFIGURATION -----
 # Directory where the uniform processed videos are stored (from your previous processing).
 # INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/resized_generated_videos" # for generated videos
-INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/real-world-jpg" # for real-world videos
+INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/real-world-cropped" # for real-world videos
 
 # Directory where the tracking results should be stored.
 OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres/real_world"
@@ -28,13 +29,44 @@ DEVICE = "cuda"
 # Build the SAM2 video predictor.
 predictor = build_sam2_video_predictor(MODEL_CFG, CHECKPOINT, device=DEVICE)
 
-# Mapping function: for holonomic_pendulum, key is "video_5"; otherwise, "video_0".
-def get_video_key(experiment):
+def get_video_key(experiment, video_key_path=None, real_world=False):
+    # In case of real world, make video key based on the folder name. (For generated videos we use labels for specific real world videos)
+    if real_world:
+        # extract the video number from the folder name
+        video_number = int(video_key_path.split("_")[1])
+        return f"video_{video_number}"
+    
+    # Mapping function: for holonomic_pendulum, key is "video_5"; otherwise, "video_0".
     return "video_5" if experiment == "holonomic_pendulum" else "video_0"
 
 # Load the labels JSON.
 with open(LABELS_JSON_PATH, "r") as f:
     labels_json = json.load(f)
+    
+    def transform_keys(data):
+        """ Recursively modify keys to keep only 'video_X' and remove suffixes. """
+        new_data = {}
+
+        for key, value in data.items():
+            # Find "video_X" format
+            match = re.match(r"(video_\d+)", key)
+            new_key = match.group(1) if match else key  # Keep only "video_X"
+
+            # If the key already exists, merge values
+            if new_key in new_data:
+                if isinstance(new_data[new_key], dict) and isinstance(value, dict):
+                    new_data[new_key].update(value)
+                else:
+                    print(f"Warning: Conflict at {new_key}, data types don't match.")
+            else:
+                # Recursively process nested dictionaries
+                new_data[new_key] = transform_keys(value) if isinstance(value, dict) else value
+
+        return new_data
+
+    # Apply transformation
+    labels_json = transform_keys(labels_json)
+    print(labels_json)
 
 def compute_mask_properties(mask, experiment):
     """
@@ -62,7 +94,7 @@ def compute_mask_properties(mask, experiment):
             max_distance = 0.0
     return centre, max_distance
 
-def process_video_folder(video_folder):
+def process_video_folder(video_folder, real_world=False, use_cache=False):
     """
     For a given video folder (e.g. .../<experiment>/video_XX) that contains a subfolder
     "frames_for_tracking", run SAM2 tracking and produce:
@@ -83,7 +115,9 @@ def process_video_folder(video_folder):
         print(f"Unexpected folder structure: {video_folder}")
         return
     experiment = parts[-2]
-    video_key = get_video_key(experiment)
+    video_key = parts[-1]
+    print(f"Processing video {video_key} in experiment {experiment}")
+    video_key = get_video_key(experiment, video_key, real_world)
     
     # Look up label data for this experiment and video.
     if experiment not in labels_json:
@@ -93,7 +127,8 @@ def process_video_folder(video_folder):
         print(f"No label data for video key {video_key} in experiment {experiment}")
         return
     label_info = labels_json[experiment][video_key]
-    
+    print(f"Processing video {video_key} in experiment {experiment}")
+    print(label_info)
     # Process points for each object separately.
     object_points = {}
     for obj_key, obj_data in label_info.items():
@@ -188,7 +223,7 @@ def process_video_folder(video_folder):
     masks_over_time = {}     # {frame_idx: {obj_id: mask}}
     max_distance_over_time = {}  # {obj_id: [(frame_idx, max_distance), ...]} (only if holonomic_pendulum)
     
-    for out_frame_idx in range(0, len(frame_names)):
+    for out_frame_idx in range(0, len(frame_names), 10):
         frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
         frame_img = np.array(Image.open(frame_path))
 
@@ -308,24 +343,29 @@ def process_video_folder(video_folder):
     print(f"Tracking plots saved in {frames_plots}")
 
 
-def process_all_videos_for_tracking():
+def process_all_videos_for_tracking(real_world=False, use_cache=False):
     """
     Loops through all video folders in INPUT_VIDEOS_DIR (the uniform output from processing)
     that contain a "frames_for_tracking" folder, and runs tracking on each.
     """
-    # for root, dirs, files in os.walk(INPUT_VIDEOS_DIR):
-    #     # We assume video folders are named like "video_XX"
-    #     if os.path.basename(root).startswith("video_"):
-    #         # check if "frames_for_tracking" exists, other check if there are already jpgs files in this dir,because then we track this 
-    #         frames_dir = os.path.join(root, "frames_for_tracking")
+    for root, dirs, files in os.walk(INPUT_VIDEOS_DIR):
+        # We assume video folders are named like "video_XX"
+        if os.path.basename(root).startswith("video_"):
+            # check if "frames_for_tracking" exists, other check if there are already jpgs files in this dir,because then we track this 
+            frames_dir = os.path.join(root, "frames_for_tracking")
             
-    #         if os.path.exists(frames_dir):
-    #             print(f"Running tracking in {root}")
+            if "double_pendulum" in root or "non_holonomic" in root:
+                continue
+            
+            if "video_0" in root:
+                continue
+            if os.path.exists(frames_dir):
+                print(f"Running tracking in {root}")
                 
-    #             # if "video_1" in root or "non_holonomic_pendulum" in root or "projectile" in root or "falling_ball" in root:
-    #             #     print("----------------> SKIPPING")
-    #             #     continue
-    #             process_video_folder(root)
+                # if "video_1" in root or "non_holonomic_pendulum" in root or "projectile" in root or "falling_ball" in root:
+                #     print("----------------> SKIPPING")
+                #     continue
+                process_video_folder(root, real_world, use_cache)
 
     
     # upload to HF
@@ -341,8 +381,8 @@ def process_all_videos_for_tracking():
     api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
 
     # # Delete old files from the repo before re-uploading to ensure overwrite
-    api.delete_repo(repo_id=repo_name, repo_type="dataset")
-    api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
+    # api.delete_repo(repo_id=repo_name, repo_type="dataset")
+    # api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
 
     # # Upload files (using upload_large_folder for large datasets)
     api.upload_large_folder(folder_path=OUTPUT_DIR, repo_id=repo_name, repo_type="dataset")
@@ -350,4 +390,6 @@ def process_all_videos_for_tracking():
     print(f"Upload complete: {repo_name}")
 
 if __name__ == "__main__":
-    process_all_videos_for_tracking()
+    real_world = True
+    use_cache = False
+    process_all_videos_for_tracking(real_world, use_cache)
