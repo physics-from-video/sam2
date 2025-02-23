@@ -150,7 +150,7 @@ def process_all_videos(args):
         # Upload results to Hugging Face.
         from huggingface_hub import HfApi
         api = HfApi()
-        repo_name = "physics-from-video/sam2-real-world-tracking"
+        repo_name = "physics-from-video/sam2-tracking"
         print(f"Uploading {args.output_dir} to Hugging Face dataset repository {repo_name}...")
         api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
         api.upload_large_folder(folder_path=args.output_dir, repo_id=repo_name, repo_type="dataset")
