@@ -4,10 +4,11 @@ from PIL import Image
 from utils.processing import load_labels, process_object_points, get_video_key, process_segmentation_frames, save_tracking_data
 from utils.plotting import save_first_frame_segmentation, plot_first_frame, plot_centres_over_time, plot_max_distance_over_time
 from sam2.build_sam import build_sam2_video_predictor
+import argparse
 
 # ----- CONFIGURATION -----
 INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/real-world-cropped"
-OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres/real_world_new"
+OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres/real_world"
 LABELS_JSON_PATH = r"/home/tnijdam/VGMs/prompts/reference_images/labels.json"
 
 CHECKPOINT = "./checkpoints/sam2.1_hiera_large.pt"
@@ -124,7 +125,8 @@ def process_all_videos(real_world=False, use_cache=False):
         if os.path.basename(root).startswith("video_"):
             frames_dir = os.path.join(root, "frames_for_tracking")
             # we dont have the labels for this yet so skipping it for now
-            if any(skip in root for skip in ["non_holonomic"]): # ["double_pendulum", "non_holonomic", "video_0", "holonomic_pendulum"]
+            if any(skip in root for skip in ["double_pendulum", "holonomic_pendulum", "falling_ball", "projectile"]): #  "non_holonomic"
+                print(f"Skipping folder: {root}")
                 continue
             if os.path.exists(frames_dir):
                 print(f"Processing folder: {root}")
@@ -140,5 +142,11 @@ def process_all_videos(real_world=False, use_cache=False):
     print(f"Upload complete: {repo_name}")
 
 
+
 if __name__ == "__main__":
-    process_all_videos(real_world=True, use_cache=True)
+    parser = argparse.ArgumentParser(description="Process real-world videos for tracking.")
+    parser.add_argument("--real_world", action="store_true", help="Process real-world videos.")
+    parser.add_argument("--use_cache", action="store_true", help="Use cached results if available.")
+    args = parser.parse_args()
+
+    process_all_videos(real_world=args.real_world, use_cache=args.use_cache)
