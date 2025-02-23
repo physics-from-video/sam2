@@ -5,6 +5,7 @@ from utils.processing import load_labels, process_object_points, process_segment
 from utils.plotting import save_first_frame_segmentation, plot_first_frame, plot_centres_over_time, plot_max_distance_over_time
 from sam2.build_sam import build_sam2_video_predictor
 import argparse
+import re
 
 # ----- CONFIGURATION -----
 LABELS_JSON_PATH = r"/home/tnijdam/VGMs/prompts/reference_images/labels.json"
@@ -135,8 +136,17 @@ def process_video_folder(video_folder, labels_json, args):
 def process_all_videos(args):
     """Loop through all video folders and process those containing a 'frames_for_tracking' directory."""
     labels_json = load_labels(LABELS_JSON_PATH)
+    
+    # sort
+    
     for root, dirs, files in os.walk(args.input_dir):
-        if os.path.basename(root).startswith("video_"):
+        # Extract the base directory name
+        base_name = os.path.basename(root)
+
+        # Check the condition
+        # Real world videos are called video_0, video_1, etc.
+        # Generated videos are called 0, 1, etc.
+        if (args.real_world and base_name.startswith("video_")) or (not args.real_world and re.match(r"^\d{1,2}$", base_name)):
             frames_dir = os.path.join(root, "frames_for_tracking")
             # we dont have the labels for this yet so skipping it for now
             if any(skip in root for skip in []): #["double_pendulum", "holonomic_pendulum", "falling_ball", "projectile"]): #  "non_holonomic"
@@ -146,7 +156,7 @@ def process_all_videos(args):
                 print(f"Processing folder: {root}")
                 process_video_folder(root, labels_json, args)
 
-    if args.upload_to_hugginface:
+    if args.upload_to_huggingface:
         # Upload results to Hugging Face.
         from huggingface_hub import HfApi
         api = HfApi()
@@ -164,8 +174,8 @@ if __name__ == "__main__":
     
     parser.add_argument("--real_world", action="store_true", help="Process real-world videos.")
     parser.add_argument("--use_cache", action="store_true", help="Use cached results if available.")
-    parser.add_argument("--upload_to_hugginface", action="store_true", help="Upload results to Hugging Face.")
+    parser.add_argument("--upload_to_huggingface", action="store_true", help="Upload results to Hugging Face.")
     
     args = parser.parse_args()
-
+    print(f"Processing videos in {args.input_dir}")
     process_all_videos(args)
