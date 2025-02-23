@@ -1,16 +1,13 @@
 import os
 import numpy as np
 from PIL import Image
-from utils.processing import load_labels, process_object_points, get_video_key, process_segmentation_frames, save_tracking_data
+from utils.processing import load_labels, process_object_points, process_segmentation_frames, save_tracking_data
 from utils.plotting import save_first_frame_segmentation, plot_first_frame, plot_centres_over_time, plot_max_distance_over_time
 from sam2.build_sam import build_sam2_video_predictor
 import argparse
 
 # ----- CONFIGURATION -----
-INPUT_VIDEOS_DIR = r"/scratch-shared/tnijdam/real-world-cropped"
-OUTPUT_DIR = r"/scratch-shared/tnijdam/sam2_tracking_centres/real_world"
 LABELS_JSON_PATH = r"/home/tnijdam/VGMs/prompts/reference_images/labels.json"
-
 CHECKPOINT = "./checkpoints/sam2.1_hiera_large.pt"
 MODEL_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 DEVICE = "cuda"
@@ -47,7 +44,7 @@ def propagate_tracking(inference_state):
     return video_segments
 
 
-def process_video_folder(video_folder, labels_json, real_world=False, use_cache=False):
+def process_video_folder(video_folder, labels_json, args):
     """
     Process a single video folder:
       - Check for caching.
@@ -57,9 +54,9 @@ def process_video_folder(video_folder, labels_json, real_world=False, use_cache=
       - Propagate segmentation and process every 10th frame.
       - Save data and plot trajectories.
     """
-    rel_path = os.path.relpath(video_folder, INPUT_VIDEOS_DIR)
-    tracking_output_folder = os.path.join(OUTPUT_DIR, rel_path)
-    if use_cache and os.path.exists(tracking_output_folder) and os.listdir(tracking_output_folder):
+    rel_path = os.path.relpath(video_folder, args.input_dir)
+    tracking_output_folder = os.path.join(args.output_dir, rel_path)
+    if args.use_cache and os.path.exists(tracking_output_folder) and os.listdir(tracking_output_folder):
         print(f"Skipping cached folder: {tracking_output_folder}")
         return
     os.makedirs(tracking_output_folder, exist_ok=True)
@@ -75,7 +72,24 @@ def process_video_folder(video_folder, labels_json, real_world=False, use_cache=
         return
 
     experiment = parts[-2]
-    video_key = get_video_key(experiment, parts[-1], real_world)
+    
+    # we need to rename the experiment to match the labels
+    if experiment == "non_holonomic_pendulum":
+        experiment = "non_holonomic"
+    
+    # Extract the last part of the path, which contains the video identifier
+    video_key_str = parts[-1]
+
+    # Determine the key used for extracting labels:
+    # - For real-world videos, the key is derived from the video filename.
+    # - For generated videos, we use a fixed key to ensure consistency in label extraction.
+    if args.real_world:
+        video_number = int(video_key_str.split("_")[1])
+        video_key = f"video_{video_number}"
+    else:
+        # Use a predefined key for generated videos based on the experiment type
+        video_key = "video_5" if experiment == "holonomic_pendulum" else "video_0"
+
     if experiment not in labels_json or video_key not in labels_json[experiment]:
         print(f"Label info missing for experiment '{experiment}' and video '{video_key}'")
         return
@@ -118,35 +132,40 @@ def process_video_folder(video_folder, labels_json, real_world=False, use_cache=
     print(f"Finished processing video: {video_folder}")
 
 
-def process_all_videos(real_world=False, use_cache=False):
+def process_all_videos(args):
     """Loop through all video folders and process those containing a 'frames_for_tracking' directory."""
     labels_json = load_labels(LABELS_JSON_PATH)
-    for root, dirs, files in os.walk(INPUT_VIDEOS_DIR):
+    for root, dirs, files in os.walk(args.input_dir):
         if os.path.basename(root).startswith("video_"):
             frames_dir = os.path.join(root, "frames_for_tracking")
             # we dont have the labels for this yet so skipping it for now
-            if any(skip in root for skip in ["double_pendulum", "holonomic_pendulum", "falling_ball", "projectile"]): #  "non_holonomic"
+            if any(skip in root for skip in []): #["double_pendulum", "holonomic_pendulum", "falling_ball", "projectile"]): #  "non_holonomic"
                 print(f"Skipping folder: {root}")
                 continue
             if os.path.exists(frames_dir):
                 print(f"Processing folder: {root}")
-                process_video_folder(root, labels_json, real_world, use_cache)
+                process_video_folder(root, labels_json, args)
 
-    # Upload results to Hugging Face.
-    from huggingface_hub import HfApi
-    api = HfApi()
-    repo_name = "physics-from-video/sam2-real-world-tracking"
-    print(f"Uploading {OUTPUT_DIR} to Hugging Face dataset repository {repo_name}...")
-    api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
-    api.upload_large_folder(folder_path=OUTPUT_DIR, repo_id=repo_name, repo_type="dataset")
-    print(f"Upload complete: {repo_name}")
-
+    if args.upload_to_hugginface:
+        # Upload results to Hugging Face.
+        from huggingface_hub import HfApi
+        api = HfApi()
+        repo_name = "physics-from-video/sam2-real-world-tracking"
+        print(f"Uploading {args.output_dir} to Hugging Face dataset repository {repo_name}...")
+        api.create_repo(repo_id=repo_name, repo_type="dataset", exist_ok=True)
+        api.upload_large_folder(folder_path=args.output_dir, repo_id=repo_name, repo_type="dataset")
+        print(f"Upload complete: {repo_name}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process real-world videos for tracking.")
+    parser.add_argument("--input_dir", type=str, default=r"/scratch-shared/tnijdam/resized_videos")
+    parser.add_argument("--output_dir", type=str, default=r"/scratch-shared/tnijdam/sam2_tracking")
+    
     parser.add_argument("--real_world", action="store_true", help="Process real-world videos.")
     parser.add_argument("--use_cache", action="store_true", help="Use cached results if available.")
+    parser.add_argument("--upload_to_hugginface", action="store_true", help="Upload results to Hugging Face.")
+    
     args = parser.parse_args()
 
-    process_all_videos(real_world=args.real_world, use_cache=args.use_cache)
+    process_all_videos(args)

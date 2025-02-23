@@ -25,12 +25,6 @@ def load_labels(labels_path):
         data = json.load(f)
     return transform_keys(data)
 
-def get_video_key(experiment, video_key_str, real_world=False):
-    """Derive the video key based on experiment type."""
-    if real_world:
-        video_number = int(video_key_str.split("_")[1])
-        return f"video_{video_number}"
-    return "video_5" if experiment == "holonomic_pendulum" else "video_0"
 
 def compute_mask_properties(mask, experiment):
     """
