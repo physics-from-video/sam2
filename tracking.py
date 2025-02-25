@@ -6,15 +6,63 @@ from utils.plotting import save_first_frame_segmentation, plot_first_frame, plot
 from sam2.build_sam import build_sam2_video_predictor
 import argparse
 import re
+from transformers import pipeline
+import torch
+from torchvision import transforms
 
 # ----- CONFIGURATION -----
-LABELS_JSON_PATH = r"/home/tnijdam/VGMs/prompts/reference_images/labels.json"
+LABELS_JSON_PATH = r"../../prompts/reference_images/labels.json"
 CHECKPOINT = "./checkpoints/sam2.1_hiera_large.pt"
 MODEL_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 DEVICE = "cuda"
 
 # Build the SAM2 video predictor.
 predictor = build_sam2_video_predictor(MODEL_CFG, CHECKPOINT, device=DEVICE)
+
+class DepthProcessor:
+    def __init__(self, encoder='vitl'):
+        self.mapper = {"vits": "small", "vitb": "base", "vitl": "large"}
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.depth_anything = pipeline(
+            task="depth-estimation", 
+            model=f"nielsr/depth-anything-{self.mapper[encoder]}", 
+            device=0 if self.device == 'cuda' else -1
+        )
+        self.to_tensor = transforms.ToTensor()
+    
+    def predict_depth(self, image):
+        depth_output = self.depth_anything(image)
+        return self.to_tensor(depth_output["depth"]).squeeze().to(self.device)
+
+def process_depth_frames(frames_dir, masks_over_time):
+    """
+    Process depth for each frame using DepthAnything and compute average depth for each object's mask.
+    Returns depth_over_time dictionary mapping object IDs to frame-wise depth values.
+    """
+    depth_processor = DepthProcessor()
+    depth_over_time = {}
+
+    frame_files = sorted(
+        [f for f in os.listdir(frames_dir) if f.endswith(('.jpg', '.png'))],
+        key=lambda x: int(x.split('.')[0])
+    )
+    max_frame_idx = len(frame_files)
+    objects_names = masks_over_time[0].keys()
+    depth_over_time = {obj_name: np.nan * np.ones(max_frame_idx) for obj_name in objects_names}
+    for frame_idx, frame_file in enumerate(frame_files):
+        assert f"{frame_idx:05d}.jpg" == frame_file
+        frame_path = os.path.join(frames_dir, frame_file)
+        image = Image.open(frame_path).convert('RGB')
+        depth = depth_processor.predict_depth(image)
+        
+        
+        if frame_idx in masks_over_time:
+            for obj_id, mask in masks_over_time[frame_idx].items():
+                mask_tensor = torch.from_numpy(mask).to(depth.device)
+                masked_depth = depth * mask_tensor
+                avg_depth = masked_depth.sum() / (mask_tensor.sum() + 1e-6)
+                depth_over_time[obj_id][frame_idx] = avg_depth.item()
+    return depth_over_time
 
 def initialize_tracking(frames_dir, object_points):
     """
@@ -122,9 +170,20 @@ def process_video_folder(video_folder, labels_json, args):
     centers_over_time, masks_over_time, max_distance_over_time = process_segmentation_frames(
         frames_dir, video_segments, tracking_plots_dir, experiment
     )
+    depth_over_time = process_depth_frames(frames_dir, masks_over_time)
 
+    centers3d_over_time = {}
+    for key in centers_over_time.keys():
+        txy = centers_over_time[key]
+        z_over_time = depth_over_time[key]
+        xy = np.array([xy for _, xy in txy])
+        t = np.array([t for t, _ in txy])
+        txy = np.concatenate([t[:, None], xy, z_over_time[:, None]], axis=1)
+        centers3d_over_time[key] = txy
+    
+    
     # Save computed tracking data.
-    save_tracking_data(tracking_output_folder, centers_over_time, masks_over_time, max_distance_over_time, experiment)
+    save_tracking_data(tracking_output_folder, centers_over_time, centers3d_over_time, masks_over_time, max_distance_over_time, experiment)
     # Plot trajectories.
     plot_centres_over_time(centers_over_time, tracking_output_folder)
     if experiment == "holonomic_pendulum":

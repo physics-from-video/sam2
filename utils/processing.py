@@ -101,10 +101,12 @@ def process_segmentation_frames(frames_dir, video_segments, tracking_plots_dir, 
             Image.fromarray(frame_img).save(save_path)
     return centers_over_time, masks_over_time, max_distance_over_time
 
-def save_tracking_data(output_folder, centers_over_time, masks_over_time, max_distance_over_time, experiment):
+def save_tracking_data(output_folder, centers_over_time, centers3d_over_time, masks_over_time, max_distance_over_time, experiment):
     """Save computed centres, masks, and (if applicable) max distances as pickle files."""
     with open(os.path.join(output_folder, "centres.pkl"), "wb") as f:
         pickle.dump(centers_over_time, f)
+    with open(os.path.join(output_folder, "centres3d.pkl"), "wb") as f:
+        pickle.dump(centers3d_over_time, f)
     with open(os.path.join(output_folder, "masks.pkl"), "wb") as f:
         pickle.dump(masks_over_time, f)
     if experiment == "holonomic_pendulum":
