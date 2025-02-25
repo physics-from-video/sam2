@@ -36,7 +36,7 @@ def compute_mask_properties(mask, experiment):
     indices = np.argwhere(mask_bool)
     centre = tuple(np.mean(indices, axis=0)) if indices.size > 0 else (None, None)
     max_distance = None
-    if experiment == "holonomic_pendulum" and indices.size > 0:
+    if (experiment == "holonomic_pendulum" or experiment=="double_pendulum") and indices.size > 0:
         labeled = label(mask_bool)
         props = regionprops(labeled)
         max_distance = props[0].major_axis_length if props else 0.0
@@ -94,7 +94,7 @@ def process_segmentation_frames(frames_dir, video_segments, tracking_plots_dir, 
                 masks_over_time[out_frame_idx][obj_id] = mask
                 if centre[0] is not None:
                     centers_over_time.setdefault(obj_id, []).append((out_frame_idx, centre))
-                if experiment == "holonomic_pendulum":
+                if experiment == "holonomic_pendulum" or experiment=="double_pendulum":
                     max_distance_over_time.setdefault(obj_id, []).append((out_frame_idx, max_distance))
         if out_frame_idx % save_every == 0:
             save_path = os.path.join(frames_output, f"frame_{out_frame_idx:05d}_segmentation.jpg")
